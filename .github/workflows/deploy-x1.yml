@@ -32,10 +32,12 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
-      - name: Install Solana CLI 2.0.26
+      - name: Install Solana CLI 2.1.21
         run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/v2.0.26/install)"
+          sh -c "$(curl -sSfL https://release.anza.xyz/v2.1.21/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          solana --version  # fail loudly if the install did not land
 
       - name: Install Anchor 0.30.1
         run: |
