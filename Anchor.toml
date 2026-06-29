@@ -5,11 +5,11 @@ anchor_version = "0.30.1"
 resolution = true
 skip-lint = false
 
-[programs.testnet]
+[programs.localnet]
 brainlet_test = "11111111111111111111111111111111"
 
 [provider]
-cluster = "https://rpc.testnet.x1.xyz"
+cluster = "localnet"
 wallet = "deployer.json"
 
 [scripts]
