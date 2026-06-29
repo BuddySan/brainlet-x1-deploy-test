@@ -1,19 +1,26 @@
 # Brainlet → X1 deploy workflow. Brainlet commits this to the USER's repo as
-# .github/workflows/deploy-x1.yml. It runs on the user's own free GitHub-hosted
-# runner: builds their Anchor/SVM program and deploys it to X1.
+# .github/workflows/deploy-x1.yml; it runs on the USER's free GitHub-hosted
+# runner. Non-custodial: user's runner builds, user's key signs, user's gas pays.
 #
-# FUNDING: X1 testnet has NO programmatic airdrop/faucet API, so the deployer
-# must be a PRE-FUNDED keypair the user supplies as the repo secret
-# X1_DEPLOY_KEYPAIR (the JSON array from `solana-keygen new`). The user funds
-# its address ONCE — testnet: https://faucet.testnet.x1.xyz/ , mainnet: real XNT.
-# Non-custodial: the user's runner builds, the user's key signs, the user's gas pays.
-# The Program ID is published to the run Summary AND as the `program-id` artifact.
+# Toolchain = the PROVEN X1 combo (mirrors the gainspire anchor-ci recipe):
+#   * agave/solana 2.1.0  -> platform-tools v1.43 -> target sbf-solana-solana
+#     (X1-compatible). agave 2.2+ uses sbpf-solana-solana = X1-INCOMPATIBLE;
+#     solana 1.18 hits the edition2024 wall. Pin 2.1.0 exactly.
+#   * Anchor 0.31.1 (anchor-syn 0.31.1 — avoids the removed proc-macro2 API)
+#   * host rust 1.82 (spl deps need lazy_cell>=1.80 + iter_repeat_n>=1.82); the
+#     SBF .so is built by platform-tools' own bundled rustc 1.79.
+#   * zeroize_derive pinned to 1.4.3 (1.5.0 needs edition2024 the SBF cargo lacks).
+#
+# FUNDING: X1 testnet has no programmatic faucet -> supply a PRE-FUNDED keypair
+# as the repo secret X1_DEPLOY_KEYPAIR (fund its address: testnet
+# https://faucet.testnet.x1.xyz/ , mainnet real XNT). Program ID -> run Summary
+# + the `program-id` artifact.
 name: Deploy to X1
 on:
   workflow_dispatch:
     inputs:
       cluster:
-        description: "X1 cluster to deploy to"
+        description: "X1 cluster"
         type: choice
         options: [testnet, mainnet]
         default: testnet
@@ -27,60 +34,58 @@ jobs:
       - name: Resolve RPC
         run: echo "X1_RPC=https://rpc.${{ inputs.cluster }}.x1.xyz" >> "$GITHUB_ENV"
 
-      - name: Install Rust
+      - name: Install Rust (host 1.82 + 1.79 for SBF/IDL determinism)
         run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+          rustup toolchain install 1.79.0 --profile minimal --no-self-update
+          rustup toolchain install 1.82.0 --profile minimal --component rustfmt --no-self-update
+          rustup default 1.82.0
 
-      - name: Install Solana CLI 2.1.21
+      - name: Install Solana / agave 2.1.0
         run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/v2.1.21/install)"
+          sh -c "$(curl -sSfL https://release.anza.xyz/v2.1.0/install)"
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
-          solana --version  # fail loudly if the install did not land
+          solana --version   # fail loudly if install didn't land
 
-      - name: Install Anchor 0.30.1
+      - name: Install Anchor 0.31.1
         run: |
           cargo install --git https://github.com/coral-xyz/anchor avm --locked --force \
             || cargo install --git https://github.com/coral-xyz/anchor avm --force
-          avm install 0.30.1
-          avm use 0.30.1
-
-      - name: Pin Rust 1.77.2 (SBF-compatible Cargo.lock v3)
-        run: |
-          rustup toolchain install 1.77.2 --profile minimal --no-self-update
-          rustup default 1.77.2
-          rm -f Cargo.lock   # regenerate as v3 with the pinned cargo
+          avm install 0.31.1
+          avm use 0.31.1
 
       - name: Configure deployer wallet (pre-funded keypair secret)
         run: |
           solana config set -u "$X1_RPC"
           if [ -z "${{ secrets.X1_DEPLOY_KEYPAIR }}" ]; then
-            echo "::error::Add your FUNDED deploy keypair as the repo secret X1_DEPLOY_KEYPAIR (the JSON array printed by 'solana-keygen new'). Fund its address first — testnet: https://faucet.testnet.x1.xyz/ · mainnet: send XNT."
+            echo "::error::Add your FUNDED deploy keypair as repo secret X1_DEPLOY_KEYPAIR (the JSON array from 'solana-keygen new'). Fund its address first — testnet: https://faucet.testnet.x1.xyz/ · mainnet: send XNT."
             exit 1
           fi
           printf '%s' '${{ secrets.X1_DEPLOY_KEYPAIR }}' > deployer.json
           solana config set -k deployer.json
-          ADDR="$(solana address)"
-          echo "Deployer address: $ADDR"
-          BAL="$(solana balance 2>/dev/null || echo 0)"
-          echo "Balance: $BAL"
-          case "$BAL" in
-            0\ *|0|"") echo "::error::Deployer $ADDR has no funds. Fund it (testnet faucet / mainnet XNT) then re-run."; exit 1 ;;
-          esac
+          ADDR="$(solana address)"; echo "Deployer: $ADDR"
+          BAL="$(solana balance 2>/dev/null || echo 0)"; echo "Balance: $BAL"
+          case "$BAL" in 0\ *|0|"") echo "::error::Deployer $ADDR has no funds. Fund it then re-run."; exit 1 ;; esac
 
-      - name: Build
+      - name: Pin edition2024-free deps
+        run: |
+          cargo generate-lockfile || true
+          cargo update -p zeroize_derive --precise 1.4.3 || true
+          cargo update -p zeroize --precise 1.8.2 || true
+
+      - name: Build (Anchor 0.31.1 -> sbf-solana-solana)
         run: anchor build
 
       - name: Deploy
         run: |
           set -o pipefail
-          # Deploy with the solana CLI directly (RPC + keypair already set via
-          # `solana config`). Avoids anchor's custom-cluster Anchor.toml handling.
-          solana program deploy target/deploy/*.so 2>&1 | tee deploy.log
+          SO="$(ls target/deploy/*.so 2>/dev/null | head -1)"
+          [ -z "$SO" ] && SO="$(ls target/sbf-solana-solana/release/*.so 2>/dev/null | head -1)"
+          [ -z "$SO" ] && { echo "::error::no .so produced"; exit 1; }
+          solana program deploy "$SO" 2>&1 | tee deploy.log
           PID="$(grep -oE 'Program Id: [1-9A-HJ-NP-Za-km-z]+' deploy.log | awk '{print $3}' | tail -1)"
-          if [ -z "$PID" ]; then PID="$(solana address -k target/deploy/*-keypair.json 2>/dev/null | head -1)"; fi
-          if [ -z "$PID" ]; then echo "::error::Could not determine Program ID"; exit 1; fi
+          [ -z "$PID" ] && PID="$(solana address -k target/deploy/*-keypair.json 2>/dev/null | head -1)"
+          [ -z "$PID" ] && { echo "::error::could not determine Program ID"; exit 1; }
           echo "$PID" > program-id.txt
           echo "## ✅ Deployed Program ID" >> "$GITHUB_STEP_SUMMARY"
           echo "\`$PID\` on X1 ${{ inputs.cluster }}" >> "$GITHUB_STEP_SUMMARY"
