@@ -75,15 +75,13 @@ jobs:
           BAL="$(solana balance 2>/dev/null || echo 0)"; echo "Balance: $BAL"
           case "$BAL" in 0\ *|0|"") echo "::error::Deployer $ADDR has no funds. Fund it then re-run."; exit 1 ;; esac
 
-      - name: Pin edition2024-offending deps to SBF-buildable versions
-        run: |
-          cargo generate-lockfile || true
-          cargo update -p cpufeatures --precise 0.2.17 || true
-          cargo update -p zeroize_derive --precise 1.4.3 || true
-          cargo update -p zeroize --precise 1.8.2 || true
-
       - name: Build (Anchor 0.31.1 -> sbf-solana-solana)
-        run: anchor build
+        # Uses the repo's COMMITTED Cargo.lock (do not regenerate). A real dApp
+        # ships a working, SBF-buildable lock; building from a fresh tree without
+        # one lets cargo pull bleeding-edge `edition2024` crates the SBF cargo
+        # (platform-tools 1.79) can't parse. If your build hits an `edition2024`
+        # error, commit a Cargo.lock generated from your working dev environment.
+        run: anchor build --no-idl
 
       - name: Deploy
         run: |
