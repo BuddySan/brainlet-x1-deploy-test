@@ -1,0 +1,48 @@
+name: Deploy to X1
+on:
+  workflow_dispatch:
+    inputs:
+      cluster:
+        description: "X1 cluster"
+        type: choice
+        options: [testnet, mainnet]
+        default: testnet
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: RPC
+        run: echo "X1_RPC=https://rpc.${{ inputs.cluster }}.x1.xyz" >> "$GITHUB_ENV"
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - name: Solana CLI 2.0.26
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v2.0.26/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Anchor 0.30.1
+        run: |
+          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force || cargo install --git https://github.com/coral-xyz/anchor avm --force
+          avm install 0.30.1 && avm use 0.30.1
+      - name: Wallet + fund (testnet)
+        run: |
+          solana config set -u "$X1_RPC"
+          solana-keygen new --no-bip39-passphrase -s -o deployer.json
+          solana config set -k deployer.json
+          echo "Deployer: $(solana address)"
+          for i in 1 2 3 4 5; do solana airdrop 5 || solana airdrop 2 || true; B="$(solana balance 2>/dev/null | awk '{print $1}')"; echo "bal=$B"; case "${B:-0}" in 0|0.*|"") sleep 6;; *) break;; esac; done
+      - name: Build
+        run: anchor build
+      - name: Deploy
+        run: |
+          set -o pipefail
+          anchor deploy --provider.cluster "$X1_RPC" 2>&1 | tee deploy.log || solana program deploy target/deploy/*.so 2>&1 | tee -a deploy.log
+          PID="$(grep -oE 'Program Id: [1-9A-HJ-NP-Za-km-z]+' deploy.log | awk '{print $3}' | tail -1)"
+          [ -z "$PID" ] && PID="$(solana address -k target/deploy/*-keypair.json 2>/dev/null | head -1)"
+          [ -z "$PID" ] && { echo '::error::no program id'; exit 1; }
+          echo "$PID" > program-id.txt
+          echo "## Deployed: $PID" >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish id
+        if: ${{ always() && hashFiles('program-id.txt') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: program-id, path: program-id.txt }
