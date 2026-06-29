@@ -34,11 +34,11 @@ jobs:
       - name: Resolve RPC
         run: echo "X1_RPC=https://rpc.${{ inputs.cluster }}.x1.xyz" >> "$GITHUB_ENV"
 
-      - name: Install Rust (host 1.82 + 1.79 for SBF/IDL determinism)
+      - name: Install Rust (host stable — supports edition2024 for the dep-pin step)
         run: |
-          rustup toolchain install 1.79.0 --profile minimal --no-self-update
-          rustup toolchain install 1.82.0 --profile minimal --component rustfmt --no-self-update
-          rustup default 1.82.0
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version   # SBF .so is built by platform-tools' own rustc 1.79, not this
 
       - name: Install Solana / agave 2.1.0
         run: |
@@ -47,12 +47,20 @@ jobs:
           export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
           solana --version   # fail loudly if install didn't land
 
-      - name: Install Anchor 0.31.1
+      - name: Install Anchor 0.31.1 (prebuilt binary — avoids cargo-build edition2024)
         run: |
-          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force \
-            || cargo install --git https://github.com/coral-xyz/anchor avm --force
-          avm install 0.31.1
-          avm use 0.31.1
+          set -euo pipefail
+          ANCHOR_VER="0.31.1"
+          ANCHOR_SHA256="5e5f8fc0f75f2c3dc5cceb082a7f735d09be2207540291ffad370eb5b2dc959b"
+          ANCHOR_URL="https://github.com/coral-xyz/anchor/releases/download/v${ANCHOR_VER}/anchor-${ANCHOR_VER}-x86_64-unknown-linux-gnu"
+          mkdir -p "$HOME/.avm/bin"
+          curl -sSfL "$ANCHOR_URL" -o "$HOME/.avm/bin/anchor-${ANCHOR_VER}"
+          echo "${ANCHOR_SHA256}  $HOME/.avm/bin/anchor-${ANCHOR_VER}" | sha256sum -c -
+          cp "$HOME/.avm/bin/anchor-${ANCHOR_VER}" "$HOME/.avm/bin/anchor"
+          chmod +x "$HOME/.avm/bin/anchor"
+          echo "$HOME/.avm/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.avm/bin:$PATH"
+          anchor --version
 
       - name: Configure deployer wallet (pre-funded keypair secret)
         run: |
@@ -67,9 +75,10 @@ jobs:
           BAL="$(solana balance 2>/dev/null || echo 0)"; echo "Balance: $BAL"
           case "$BAL" in 0\ *|0|"") echo "::error::Deployer $ADDR has no funds. Fund it then re-run."; exit 1 ;; esac
 
-      - name: Pin edition2024-free deps
+      - name: Pin edition2024-offending deps to SBF-buildable versions
         run: |
           cargo generate-lockfile || true
+          cargo update -p cpufeatures --precise 0.2.17 || true
           cargo update -p zeroize_derive --precise 1.4.3 || true
           cargo update -p zeroize --precise 1.8.2 || true
 
