@@ -46,6 +46,12 @@ jobs:
           avm install 0.30.1
           avm use 0.30.1
 
+      - name: Pin Rust 1.77.2 (SBF-compatible Cargo.lock v3)
+        run: |
+          rustup toolchain install 1.77.2 --profile minimal --no-self-update
+          rustup default 1.77.2
+          rm -f Cargo.lock   # regenerate as v3 with the pinned cargo
+
       - name: Configure deployer wallet (pre-funded keypair secret)
         run: |
           solana config set -u "$X1_RPC"
