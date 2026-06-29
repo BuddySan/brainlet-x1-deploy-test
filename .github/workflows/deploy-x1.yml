@@ -69,8 +69,9 @@ jobs:
       - name: Deploy
         run: |
           set -o pipefail
-          anchor deploy --provider.cluster "$X1_RPC" 2>&1 | tee deploy.log \
-            || solana program deploy target/deploy/*.so 2>&1 | tee -a deploy.log
+          # Deploy with the solana CLI directly (RPC + keypair already set via
+          # `solana config`). Avoids anchor's custom-cluster Anchor.toml handling.
+          solana program deploy target/deploy/*.so 2>&1 | tee deploy.log
           PID="$(grep -oE 'Program Id: [1-9A-HJ-NP-Za-km-z]+' deploy.log | awk '{print $3}' | tail -1)"
           if [ -z "$PID" ]; then PID="$(solana address -k target/deploy/*-keypair.json 2>/dev/null | head -1)"; fi
           if [ -z "$PID" ]; then echo "::error::Could not determine Program ID"; exit 1; fi
